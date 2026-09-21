@@ -22,7 +22,8 @@ from datetime import datetime, timezone
 # ---------------------------------------------------------------- ayarlar ---
 
 def env_list(name, default):
-    raw = os.getenv(name, default)
+    # ortam değişkeni hiç yoksa VEYA boş string geldiyse (GitHub vars ayarlanmamışsa) varsayılanı kullan
+    raw = os.getenv(name) or default
     return [x.strip() for x in raw.split(",") if x.strip()]
 
 API_URLS = env_list(
@@ -30,11 +31,11 @@ API_URLS = env_list(
     "https://api.schengenvisaappointments.com/api/visa-list/?format=json,"
     "https://api.visasbot.com/api/visa/list",
 )
-SOURCE_COUNTRY = os.getenv("SOURCE_COUNTRY", "tur")          # başvurunun yapıldığı ülke
+SOURCE_COUNTRY = os.getenv("SOURCE_COUNTRY") or "tur"          # başvurunun yapıldığı ülke
 MISSION_COUNTRIES = env_list("MISSION_COUNTRIES", "che,nld,aut,svk")  # hedef ülkeler (ISO3)
 CITIES = env_list("CITIES", "")                               # boş = tüm şehirler
 VISA_KEYWORDS = env_list("VISA_KEYWORDS", "tourism,turizm,turist,short,kisa")  # boş = tüm tipler
-STATE_FILE = os.getenv("STATE_FILE", "state.json")
+STATE_FILE = os.getenv("STATE_FILE") or "state.json"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 USER_AGENT = "visa-radar/1.0 (personal read-only monitor)"
@@ -211,14 +212,32 @@ def main(argv):
         telegram("🔧 visa-radar test mesajı – bot çalışıyor.")
         return 0
 
-    url, raw = fetch_any()
+    state = load_state()
+    try:
+        url, raw = fetch_any()
+    except RuntimeError as e:
+        # API'ler geçici olarak kapalı: job'ı kırmızıya boyama, bir kez haber ver, sonraki koşuda tekrar dene
+        print(f"[warn] {e}")
+        if not state.get("__api_down__"):
+            try:
+                telegram("⚠️ visa-radar: agregatör API'lerine ulaşılamıyor. Geri gelince tekrar haber vereceğim.")
+            except Exception as te:  # noqa: BLE001
+                print(f"[warn] Telegram hatası: {te}")
+        state["__api_down__"] = True
+        save_state(state)
+        return 0
+
+    if state.pop("__api_down__", False):
+        try:
+            telegram("✅ visa-radar: API geri geldi, takip devam ediyor.")
+        except Exception as te:  # noqa: BLE001
+            print(f"[warn] Telegram hatası: {te}")
 
     if "--dump" in argv:
         print(json.dumps(raw[:3], ensure_ascii=False, indent=2))
         print(f"... toplam {len(raw)} kayıt. Alan adlarını yukarıdan görüp gerekirse normalize_record'u güncelle.")
         return 0
 
-    state = load_state()
     new_state = {}
     changes = []
 
